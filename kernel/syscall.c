@@ -151,7 +151,7 @@ syscall(void)
     int sys_mask = p->mask;
     if((sys_mask >> num) & 1){
       // 该行应该包含进程id、         系统调用的名称       返回值
-      printf("syscall %s -> %d\n", syscall_name[num-1], p->trapframe->a0);
+      printf("%d: syscall %s -> %d\n", p->pid, syscall_name[num-1], p->trapframe->a0);
     }
   } else {
     printf("%d %s: unknown sys call %d\n",

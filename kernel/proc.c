@@ -274,7 +274,6 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-  np->mask = p->mask;
   np->parent = p;
 
   // copy saved user registers.
@@ -290,7 +289,8 @@ fork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
-
+  // 将mask拷贝到子进程
+  np->mask = p->mask;
   pid = np->pid;
 
   np->state = RUNNABLE;
