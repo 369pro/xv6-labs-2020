@@ -120,7 +120,20 @@ found:
     release(&p->lock);
     return 0;
   }
-
+  // 1.分配进程内核页表
+  p->kpagetable = kprocvminit();
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  // 2.映射内核栈
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  uvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +154,19 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  // 1. 先取消内核栈映射
+  uvmunmap(p->kpagetable, p->kstack, 1, 1);
+  // 2. 再释放页表索引页
+  proc_freekpgtbl(p->kpagetable);
+  /**
+   * p->xxx = 0目的：
+   * 避免悬挂指针，防止非法访问；
+   * 防止重复释放资源；
+   * 清除旧进程的状态，避免新进程继承错误的数据；
+   * 准备将 proc 结构体重用于新进程
+   */
+  p->kstack = 0;
+  p->kpagetable = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -150,6 +176,19 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+}
+// 释放页表索引页
+void proc_freekpgtbl(pagetable_t pagetable){
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      proc_freekpgtbl((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
 }
 
 // Create a user page table for a given process,
@@ -230,6 +269,9 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  // part 3.3 begin
+  u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz);
+  // part 3.3 end
   release(&p->lock);
 }
 
@@ -249,6 +291,9 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  // part 3.3 begin
+  u2kvmcopy(p->pagetable, p->kpagetable, p->sz, sz);
+  // part 3.3 end
   p->sz = sz;
   return 0;
 }
@@ -294,7 +339,10 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
-
+  // part 3.3 begin
+  // 复制np
+  u2kvmcopy(np->pagetable, np->kpagetable, 0, np->sz);
+  // part 3.3 end
   release(&np->lock);
 
   return pid;
@@ -473,8 +521,11 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        // 切换至进程内核页表
+        uvminithart(p->kpagetable);
         swtch(&c->context, &p->context);
-
+        // 切回xv6内核页表
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;

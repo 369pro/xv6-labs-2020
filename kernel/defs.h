@@ -108,7 +108,8 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
-
+// part3.2
+void proc_freekpgtbl(pagetable_t pagetable);
 // swtch.S
 void            swtch(struct context*, struct context*);
 
@@ -178,7 +179,13 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+void vmprint(pagetable_t pagetable);
+pagetable_t kprocvminit();
+void uvminithart(pagetable_t kpagetable);
+void uvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm);
 
+// part 3.3
+void            u2kvmcopy(pagetable_t, pagetable_t, uint64, uint64);
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);
@@ -201,6 +208,10 @@ void            statsinc(void);
 
 // sprintf.c
 int             snprintf(char*, int, char*, ...);
+
+// vmcopyin.c part3.3
+int             copyin_new(pagetable_t, char*, uint64, uint64);
+int             copyinstr_new(pagetable_t, char*, uint64, uint64);
 
 #ifdef LAB_NET
 // pci.c
