@@ -198,7 +198,7 @@ static inline uint64
 r_satp()
 {
   uint64 x;
-  asm volatile("csrr %0, satp" : "=r" (x) );
+  asm volatile("csrr %0, satp" : "=r" (x) ); // read stap_val to x
   return x;
 }
 

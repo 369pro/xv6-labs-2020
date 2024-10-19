@@ -233,7 +233,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
 }
-
+// initcode.S翻译成的机器码
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
