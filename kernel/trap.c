@@ -77,8 +77,17 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if(p->flag == 0 && p->interval != 0 && ++p->tick_cnt == p->interval){
+      memmove(p->copy_trapframe, p->trapframe, sizeof(struct trapframe));
+      // call func periodic, jump to u-mode
+      p->trapframe->epc = p->handler;
+      // 将p->tick_cnt清0
+      p->tick_cnt = 0;
+      p->flag = 1;
+    }
     yield();
+  }
 
   usertrapret();
 }
