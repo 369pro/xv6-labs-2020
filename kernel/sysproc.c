@@ -46,9 +46,20 @@ sys_sbrk(void)
 
   if(argint(0, &n) < 0)
     return -1;
-  addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+  struct proc* p = myproc();
+  addr = p->sz;
+  uint64 sz = p->sz;
+  if(n >= 0){
+    sz += n;
+  }else if(n < 0){
+    if(sz+n < 0) return -1;
+    // uvmdealloc 的作用是实际地将虚拟内存中的一部分释放，并更新页表。
+    // 这确保了释放的内存可以被其他进程使用，而不仅仅是标记为“无效”
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+  }
+  // if(growproc(n) < 0)
+  //   return -1;
+  p->sz = sz;
   return addr;
 }
 

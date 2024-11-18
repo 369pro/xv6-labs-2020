@@ -49,8 +49,8 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
+  uint64 cause = r_scause();
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -67,7 +67,22 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(cause == 13 || cause == 15){
+    // 这里程序在访问某虚拟地址时，对应物理地址未分配(虚拟地址是合法地址范围内的任意地址)
+    uint64 va = r_stval();
+    // 位于栈空间之上，进程最大虚拟地址之下
+    char* pa;
+    if(PGROUNDUP(p->trapframe->sp)-1 < va && va < p->sz && 
+    (pa = kalloc()) != 0){
+      memset(pa, 0, PGSIZE);
+    if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(pa);
+      p->killed = 1;
+    }
+    }else{
+      p->killed = 1;
+    }
+  }else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

@@ -68,6 +68,20 @@ int
 argaddr(int n, uint64 *ip)
 {
   *ip = argraw(n);
+  char* pa;
+  struct proc* p = myproc();
+  if(walkaddr(p->pagetable, *ip) == 0){
+    if(PGROUNDUP(p->trapframe->sp)-1 < *ip && *ip < p->sz && 
+    (pa = kalloc()) != 0){
+      memset(pa, 0, PGSIZE);
+      if(mappages(p->pagetable, PGROUNDDOWN(*ip), PGSIZE, (uint64)pa, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+        kfree(pa);
+        p->killed = 1;
+      }
+    }else{
+      return -1;
+    }
+  }
   return 0;
 }
 
