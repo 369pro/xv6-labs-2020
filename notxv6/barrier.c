@@ -3,6 +3,12 @@
 #include <stdio.h>
 #include <assert.h>
 #include <pthread.h>
+#define mutex_lock pthread_mutex_lock
+#define mutex_unlock pthread_mutex_unlock
+#define mutex_init(mutex) pthread_mutex_init(mutex, NULL)
+#define cond_wait pthread_cond_wait
+#define cond_broadcast pthread_cond_broadcast
+#define cond_init(cond) pthread_cond_init(cond, NULL)
 
 static int nthread = 1;
 static int round = 0;
@@ -29,8 +35,22 @@ barrier()
   //
   // Block until all threads have called barrier() and
   // then increment bstate.round.
-  //
-  
+  mutex_lock(&bstate.barrier_mutex);
+  bstate.nthread++;
+  int round = bstate.round;
+  // printf("round=%d bstate.nthread=%d\n", round, bstate.nthread);
+  while(bstate.nthread != nthread && round == bstate.round){
+    cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
+  }
+  if(bstate.nthread == nthread){
+    bstate.nthread = 0;
+    bstate.round++;
+    round++;
+    cond_broadcast(&bstate.barrier_cond);
+  }//else{   改进：可以不用while+round判断的!!
+  //    cond_wait(&bstate.barrier_cond, &bstate.barrier_mutex);
+  // }
+  mutex_unlock(&bstate.barrier_mutex);
 }
 
 static void *
