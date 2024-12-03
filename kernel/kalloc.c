@@ -21,12 +21,17 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  for(int i = 0; i < NCPU; i++){
+    char lockname[16];  // 假设最大支持 15 位数字，预留空间给 "kmem" + 数字
+    snprintf(lockname, sizeof(lockname), "kmem_%d", i);
+    // 使用生成的字符串作为 lockname
+    initlock(&kmem[i].lock, lockname);
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -47,7 +52,6 @@ void
 kfree(void *pa)
 {
   struct run *r;
-
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
@@ -55,11 +59,13 @@ kfree(void *pa)
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
-
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int id = cpuid();
+  acquire(&kmem[id].lock);
+  r->next = kmem[id].freelist;
+  kmem[id].freelist = r;
+  release(&kmem[id].lock);
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -69,13 +75,32 @@ void *
 kalloc(void)
 {
   struct run *r;
-
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  push_off();
+  int id = cpuid();
+  acquire(&kmem[id].lock);
+  r = kmem[id].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
-
+    kmem[id].freelist = r->next;
+  else{
+    int otherid;
+    for(otherid = 0; otherid < NCPU; otherid++){
+      if(otherid == id || !kmem[otherid].freelist) continue;
+      acquire(&kmem[otherid].lock);
+      r = kmem[otherid].freelist;
+      // 如果不判断直接分配r=null时分配页面就会导致页面缺失
+      // (分配的页面用不了)
+      if(r){
+        kmem[otherid].freelist = r->next;
+        release(&kmem[otherid].lock);
+        // 获取到了赶紧退出循环
+        break;
+      }
+      // 没获取到空闲页面就释放锁，重新获取
+      release(&kmem[otherid].lock);
+    }
+  }
+  release(&kmem[id].lock);
+  pop_off();
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;

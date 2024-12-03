@@ -112,7 +112,7 @@ bwrite(struct buf *b)
 }
 
 // Release a locked buffer.
-// Move to the head of the most-recently-used list.
+// Move to the tail of the most-recently-used list.
 void
 brelse(struct buf *b)
 {

@@ -199,7 +199,7 @@ alloc3_desc(int *idx)
   }
   return 0;
 }
-
+// write=1 means write to disk 0 means read from disk
 void
 virtio_disk_rw(struct buf *b, int write)
 {
