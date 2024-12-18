@@ -218,10 +218,12 @@ ialloc(uint dev, short type)
 // Must be called after every change to an ip->xxx field
 // that lives on disk, since i-node cache is write-through.
 // Caller must hold ip->lock.
+// 同步inode数据到磁盘中
 void
 iupdate(struct inode *ip)
 {
   struct buf *bp;
+  // on disk inode
   struct dinode *dip;
 
   bp = bread(ip->dev, IBLOCK(ip->inum, sb));
@@ -239,6 +241,7 @@ iupdate(struct inode *ip)
 // Find the inode with number inum on device dev
 // and return the in-memory copy. Does not lock
 // the inode and does not read it from disk.
+// 从icache中读取inode, 缓存满了的话panic
 static struct inode*
 iget(uint dev, uint inum)
 {
@@ -326,7 +329,7 @@ iunlock(struct inode *ip)
 // If that was the last reference, the inode cache entry can
 // be recycled.
 // If that was the last reference and the inode has no links
-// to it, free the inode (and its content) on disk.
+// to it, free the inode (and its content) on disk.(释放到磁盘空间)
 // All calls to iput() must be inside a transaction in
 // case it has to free the inode.
 void
@@ -342,7 +345,7 @@ iput(struct inode *ip)
     acquiresleep(&ip->lock);
 
     release(&icache.lock);
-
+    // Truncate inode
     itrunc(ip);
     ip->type = 0;
     iupdate(ip);
@@ -377,8 +380,9 @@ iunlockput(struct inode *ip)
 static uint
 bmap(struct inode *ip, uint bn)
 {
-  uint addr, *a;
+  uint addr, *a, *a2;
   struct buf *bp;
+  struct buf *bp2;
 
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
@@ -400,6 +404,32 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+  bn -= NINDIRECT;
+  // 二级间接索引
+  if(bn < NINDIRECT*NINDIRECT){
+    uint idx = bn / NINDIRECT;
+    uint offset = bn % NINDIRECT;
+    if((addr = ip->addrs[NDIRECT+1]) == 0)
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
+    // 读取一级间接块到cache
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    // 分配二级间接块
+    if(a[idx] == 0){
+      a[idx] = balloc(ip->dev);
+      log_write(bp);
+    }
+    // 读取二级间接块到cache
+    bp2 = bread(ip->dev, a[idx]);
+    a2 = (uint*)bp2->data;
+    if((addr = a2[offset]) == 0){
+      a2[offset] = addr = balloc(ip->dev);
+      log_write(bp2);
+    }
+    brelse(bp2);
+    brelse(bp);
+    return addr;
+  }
 
   panic("bmap: out of range");
 }
@@ -409,9 +439,10 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
+  int i, j, k;
   struct buf *bp;
-  uint *a;
+  struct buf *bp2;
+  uint *a, *a2;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -430,6 +461,26 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+  // 释放二级间接索引块(先释放磁盘数据块，再释放磁盘索引块)
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(j = 0; j < NINDIRECT; j++){
+      // 存在二级索引块的话
+      if(a[j]){
+        bp2 = bread(ip->dev, a[j]);
+        a2 = (uint*)bp2->data;
+        for(k = 0; k < NINDIRECT; k++){
+          if(a2[k]) bfree(ip->dev, a2[k]);
+        }
+        brelse(bp2);
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
@@ -536,6 +587,7 @@ dirlookup(struct inode *dp, char *name, uint *poff)
     panic("dirlookup not DIR");
 
   for(off = 0; off < dp->size; off += sizeof(de)){
+    // readi读取磁盘数据到目录项de中
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("dirlookup read");
     if(de.inum == 0)
@@ -641,6 +693,8 @@ namex(char *path, int nameiparent, char *name)
       iunlockput(ip);
       return 0;
     }
+    // 此时path="", name=最后一级路径, 不用再往下查找了
+    // 因为要返回查找目录的parent的inode
     if(nameiparent && *path == '\0'){
       // Stop one level early.
       iunlock(ip);
@@ -653,6 +707,11 @@ namex(char *path, int nameiparent, char *name)
     iunlockput(ip);
     ip = next;
   }
+  /*
+  *这段代码的作用是：如果 nameiparent 为真，但路径解析完成（即整个路径被解析为文件的 inode 
+  而不是目录的 inode），则表明路径的父目录没有按预期返回。
+  此时，直接释放当前的 inode（通过 iput(ip)），然后返回 0，表示错误。
+  */
   if(nameiparent){
     iput(ip);
     return 0;

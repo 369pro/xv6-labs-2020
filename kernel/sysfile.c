@@ -171,7 +171,9 @@ isdirempty(struct inode *dp)
 {
   int off;
   struct dirent de;
-
+  // 它跳过了目录中的前两个目录项（即 . 和 ..），
+  // 因为这两个目录项是每个目录都必须存在的特殊目录项，
+  // 通常它们的 inum（inode number）是非零的。
   for(off=2*sizeof(de); off<dp->size; off+=sizeof(de)){
     if(readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
       panic("isdirempty: readi");
@@ -290,7 +292,7 @@ sys_open(void)
   int fd, omode;
   struct file *f;
   struct inode *ip;
-  int n;
+  int n, limit = 10;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
     return -1;
@@ -320,6 +322,53 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+
+  // 处理软链接情况
+  if(ip->type == T_SYMLINK){
+    // 题意理解错误 O_NOFOLLOW 直接打开符号链接就行
+    // if(omode & O_NOFOLLOW){
+    //   // 打开path处的文件
+    //   if(readi(ip, 1, (uint64)path, 0, MAXPATH) != MAXPATH){
+        
+    //     end_op();
+    //     return -1;
+    //   }
+    //   if((ip = namei(path)) == 0){
+    //     end_op();
+    //     return -1;
+    //   }
+    if(!(omode & O_NOFOLLOW)){   // 跟随链接文件并打开
+      while(limit--){
+        // Q1 readi函数参数的含义
+        // Caller must hold ip->lock.
+        // If user_dst==1, then dst is a user virtual address;
+        // otherwise, dst is a kernel address. 此处系统调用需要读入内核空间
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        // Q2 这里要解锁
+        /*
+        *readi 完成后，ip 的锁就不再需要了，因为接下来我们要解锁 ip 并释放它的引用计数，
+        *准备切换到下一个文件（即符号链接指向的目标文件）。这样做可以防止在后续操作中不必要的锁持有。
+        */
+        iunlockput(ip);
+        if((ip = namei(path)) == 0){
+          // iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+        if(ip->type != T_SYMLINK) break;
+      }
+      if(ip->type == T_SYMLINK){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -482,5 +531,34 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void){
+  struct inode *ip;
+  char target[MAXPATH], path[MAXARG];
+  // 读取系统调用第0个参数                 系统调用第1个参数
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0){
+    end_op();
+    return -1;
+  }
+  begin_op();
+  // 分配一个inode结点，create返回锁定的inode
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    // create未成功, 不用解锁
+    // iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  // If user_src==1, then src is a user virtual address;
+  // otherwise, src is a kernel address.
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
   return 0;
 }
