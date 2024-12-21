@@ -484,3 +484,107 @@ sys_pipe(void)
   }
   return 0;
 }
+/*
+把fd所指向的文件offset处映射到 内存addr处,映射长度为length
+映射后内存权限为prot
+*/
+// 本实验假定addr=offset=0
+// void *mmap(void *addr, size_t length, int prot, int flags,
+//           int fd, off_t offset);
+uint64
+sys_mmap(void)
+{
+  struct file *f;
+  struct proc* p;
+  int len, prot, flags, fd;
+  // E1: (char*)-1
+  uint64 err = 0xffffffffffffffff;
+  if(argint(1, &len) < 0 || argint(2, &prot) < 0 || 
+  argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0){
+    return err;
+  }
+  p = myproc();
+  // Q1 在进程的地址空间中找到一个未使用的区域来映射文件
+  // p->sz~MAXVA都是未使用的空间
+  if(p->sz + len > MAXVA){
+    return err;
+  }
+  // 共享页面需要文件具有可写权限
+  if((flags & MAP_SHARED) && (prot & PROT_WRITE) != 0 && f->writable == 0)
+    return err;
+  // 2. 将VMA添加到进程的映射区域表中
+  for(int i = 0; i < NVMA; i++){
+    if(p->vma[i].used == 0){
+      p->vma[i].used = 1;
+      // 映射到进程地址空间sz处
+      p->vma[i].addr = p->sz;
+      p->vma[i].len = len;
+      p->vma[i].prot = prot;
+      p->vma[i].flags = flags;
+      p->vma[i].vfd = fd;
+      p->vma[i].vfile = f;
+      filedup(f);
+      p->vma[i].offset = 0;
+      p->sz += len;
+      // 返回映射的起始地址空间
+      return p->vma[i].addr;
+    }
+  }
+  return err;
+}
+
+uint64
+sys_munmap(void)
+{
+  struct proc* p = myproc();
+  uint64 addr;
+  int len, pages;
+  if(argaddr(0, &addr) < 0 || argint(1, &len) < 0)
+    return -1;
+  int i = 0;
+  for(;i < NVMA; i++){
+    // 需要解除映射部分的长度 <= 之前映射部分的长度
+    if(p->vma[i].used && p->vma[i].len >= len){
+      // umap起始位置
+      if(p->vma[i].addr == addr){
+        p->vma[i].addr += len;
+        p->vma[i].len -= len;
+        break;
+      }
+      // umap终止位置
+      if(addr + len == p->vma[i].addr + p->vma[i].len){
+        p->vma[i].len -= len;
+        break;
+      }
+    } 
+  }
+  // printf("i = %d\n", i);
+  if(i == NVMA)
+    return -1;
+  // Q1 无需单独判断,直接利用上述筛选 起始位置,终止位置即可
+  // 在区域中间"打洞"情况
+  // if(p->vma[i].addr != addr && 
+  // addr + len-1 != p->vma[i].addr + p->vma[i].len-1){
+  //   return -1;
+  // }
+  pages = (len + PGSIZE-1)/PGSIZE;
+  // printf("pages = %d\n", pages);
+  struct file* f = p->vma[i].vfile;
+  // Q2 先将页面写回该文件
+  if((p->vma[i].flags == MAP_SHARED) && (p->vma[i].prot & PROT_WRITE)){
+    // if(filewrite(f, addr, len) == -1) {
+    //   printf("filewrite err\n");
+    //   return -1;
+    // }
+    filewrite(f, addr, len);
+  }
+  // 再解除映射
+  uvmunmap(p->pagetable, addr, pages, 1);
+  // 取消mmap之前映射的所有页面
+  if(p->vma[i].len == 0){
+    // Q3: 只有关闭文件的是否才会把p->ofile[fd]置为0
+    fileclose(f);
+    p->vma[i].used = 0;
+  }
+  return 0;
+}

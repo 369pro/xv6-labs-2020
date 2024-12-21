@@ -82,6 +82,17 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct vm_area{
+  int used;
+  uint64 addr;           // 起始地址
+  int len;
+  int prot;
+  int flags;
+  int vfd;               // 文件描述符
+  struct file* vfile;    
+  int offset;            // 文件偏移(本实验始终为0)
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -102,5 +113,6 @@ struct proc {
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
+  struct vm_area vma[NVMA];// 虚拟内存区域
   char name[16];               // Process name (debugging)
 };

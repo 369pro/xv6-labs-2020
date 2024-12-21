@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -28,6 +32,70 @@ trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
 }
+// 13: load page fault  15: read page fault
+int mmap_handler(uint64 va, uint64 cause){
+  struct proc *p = myproc();
+  int i = 0;
+  for(; i < NVMA; i++){
+    // Q1 map的文件大小可能大于1页
+    // if(p->vma[i].used && PGROUNDDOWN(va) == PGROUNDDOWN(p->vma[i].addr)){
+    //   break;
+    // }
+    if(p->vma[i].used && p->vma[i].addr <= va && va <= p->vma[i].addr + p->vma[i].len-1){
+      break;
+    }
+  }
+  // 找不到空间映射
+  if(i == NVMA){
+    return -1;
+  }
+  // 处理权限问题
+  // Q2 这么写就废了，不是通法
+  // prot = p->vma[i].prot << 1;
+  // 这里先赋值,这里是物理页的权限映射到虚拟页,不要设置PTE_V
+  int prot = PTE_U;
+  if(p->vma[i].prot & PROT_READ) prot |= PTE_R;
+  if(p->vma[i].prot & PROT_WRITE) prot |= PTE_W;
+  if(p->vma[i].prot & PROT_EXEC) prot |= PTE_X;
+  
+  struct file* f = p->vma[i].vfile;
+  // Q3 如果read 引发page fault并且所映射的文件不能read直接返回错误
+  if(cause == 13 && f->readable == 0){
+    return -1;
+  }// 同理
+  if(cause == 15 && f->writable == 0){
+    return -1;
+  }
+  void* pa = kalloc();
+  // 分配内存失败
+  if(pa == 0) {
+    return -1;
+  }
+  memset(pa, 0, PGSIZE);
+  
+  ilock(f->ip);
+  // Q4 内存中的偏移跟磁盘中的一样,并且要读取一个页面,需要page align
+  // p->vma[i].offset假定为0
+  int offset = PGROUNDDOWN(va - p->vma[i].addr);
+  // Q5 读取到 [物理] 地址空间中
+  int n = readi(f->ip, 0, (uint64)pa, offset, PGSIZE);
+  if(n == 0){
+    iunlock(f->ip);
+    kfree(pa);
+    return -1;
+  }
+  iunlock(f->ip);
+  // Q6 不要在这外面判断呀!!!
+  // if(n == 0){
+  //   return -1;
+  // }
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)pa,
+  prot) != 0){
+    kfree(pa);
+    return -1;
+  }
+  return 0;
+}
 
 //
 // handle an interrupt, exception, or system call from user space.
@@ -37,7 +105,6 @@ void
 usertrap(void)
 {
   int which_dev = 0;
-
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
 
@@ -46,11 +113,12 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  uint64 cause = r_scause();
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -67,8 +135,20 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(cause == 13 || cause == 15){
+    // handle page fault
+    // stval寄存器包含无法翻译的地址
+    // printf("cause=%d\n", cause);
+    uint64 va = r_stval();
+    // 此处fault_va处理与lazy实验一样
+    if(PGROUNDUP(p->trapframe->sp)-1 < va && va < p->sz){
+      if(mmap_handler(va, cause) != 0)
+        p->killed = 1;
+    }else{
+      p->killed = 1;
+    }
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+    printf("usertrap(): unexpected scause %p pid=%d\n", cause, p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }

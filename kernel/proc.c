@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -133,7 +134,7 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
-
+  memset(p->vma, 0, sizeof(p->vma));
   return p;
 }
 
@@ -274,7 +275,7 @@ fork(void)
     return -1;
   }
 
-  // Copy user memory from parent to child.
+  // Copy user memory from parent to child.(Q1父进程地址空间的0~sz范围内)
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
@@ -295,6 +296,16 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+  // 可以直接全部拷贝
+  memmove(np->vma, p->vma, sizeof(p->vma));
+  // Q1: uvmcopy不会复制vma区域(sz~sz+len)
+  for(int i = 0; i < NVMA; i++){
+    if(p->vma[i].used) {
+      // 也可在循环里面拷贝
+      // np->vma[i] = p->vma[i];
+      filedup(p->vma[i].vfile);
+    }
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -344,6 +355,21 @@ exit(int status)
   if(p == initproc)
     panic("init exiting");
 
+  for(int i = 0; i < NVMA; i++){
+    if(p->vma[i].used){
+      struct file* f = p->vma[i].vfile;
+      int pages = (p->vma[i].len + PGSIZE-1)/PGSIZE;
+      if((p->vma[i].flags == MAP_SHARED) && (p->vma[i].prot & PROT_WRITE)){
+        if(filewrite(f, p->vma[i].addr, p->vma[i].len) == -1) {
+          panic("filewrite err\n");
+        }
+      }
+      // Q1 此处的fileclose是内存映射文件，不是进程打开文件!!
+      fileclose(f);
+      uvmunmap(p->pagetable, p->vma[i].addr, pages, 1);
+      p->vma[i].used = 0;
+    }
+  }
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){

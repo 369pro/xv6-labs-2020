@@ -82,7 +82,7 @@ mmap_test(void)
   int fd;
   int i;
   const char * const f = "mmap.dur";
-  printf("mmap_test starting\n");
+  // printf("mmap_test starting\n");
   testname = "mmap_test";
 
   //
@@ -94,7 +94,7 @@ mmap_test(void)
   if ((fd = open(f, O_RDONLY)) == -1)
     err("open");
 
-  printf("test mmap f\n");
+  // printf("test mmap f\n");
   //
   // this call to mmap() asks the kernel to map the content
   // of open file fd into the address space. the first
