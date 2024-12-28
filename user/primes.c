@@ -5,54 +5,69 @@
 
 #define RD 0
 #define WR 1
-// 从左端管道读取第一个数据(用if)
-int lpipe_first_data(int lpipe[2], int* dest){
-    // 读取数据到dest所指的区域,通过管道读取
-    if(read(lpipe[RD], dest, sizeof(int)) == sizeof(int))
-    {
-        printf("prime %d\n", *dest);
-        return 0;
-    }
-    return -1;
-}
 
-void transmit_data(int lpipe[2], int rpipe[2], int first){
-    // 在getprimes已经关闭了
-    // close(lpipe[WR]);
-    // close(rpipe[RD]);
+void transmit_data(int lpipe[], int rpipe[], int prime){
     int num;
     while(read(lpipe[RD], &num, sizeof(int)) == sizeof(int)){
-        // *num是质数,往右管道传
-        if(num % first != 0){
+        if(num % prime != 0){
             write(rpipe[WR], &num, sizeof(int));
         }
     }
     close(lpipe[RD]);
     close(rpipe[WR]);
 }
+/**
+ * return 0 success
+ * return -1 error
+ */
+int get_lpipe_first(int lpipe[], int* dest){
+    if(read(lpipe[RD], dest, sizeof(int)) == sizeof(int)){
+        printf("prime %d\n", *dest);
+        return 0;
+    }
+    return -1;
+}
 
-void get_primes(int lpipe[2]){
+// 从left_pipe读取数据, 从right_pipe写入数据
+void get_primes(int lpipe[]){
     close(lpipe[WR]);
-    int first;
-    if(lpipe_first_data(lpipe, &first) == 0){
-        int p[2];
-        pipe(p);
-        transmit_data(lpipe, p, first);
+    int prime;
+    // Q1 终止条件
+    if(get_lpipe_first(lpipe, &prime) == 0){
+        // Q2 这个现在不能关, 关了的话fork会复制文件描述符,导致子进程用不了这个管道
+        // close(lpipe[RD]);
         if(fork() == 0){
-            // 写这里父进程把p管道关闭了傻叉，还传个毛数据
-            // transmit_data(lpipe, p, first);
-            get_primes(p);
-            close(p[RD]);
+            close(lpipe[WR]);
+            int rpipe[2];
+            pipe(rpipe);
+            transmit_data(lpipe, rpipe, prime);
+            // Q3 close(rpipe[RD]);
+            get_primes(rpipe);
+            // Q3这里最后关闭,否则get_primes下一层无法从rpipe里面读取数据
+            close(rpipe[RD]);
         }else{
-            close(p[RD]);
+            // Q2 在这里关闭
+            close(lpipe[RD]);
         }
     }
+    // Q1 没有终止条件，会无限递归
+    // if(fork() == 0){
+    //     if(get_lpipe_first(lpipe, &prime) == 0){
+    //         int rpipe[2];
+    //         pipe(rpipe);
+    //         transmit_data(lpipe, rpipe, prime);
+    //         get_primes(rpipe);
+    //         close(rpipe[RD]);
+    //         close(rpipe[WR]);
+    //     }
+    // }
     exit(0);
 }
 
 int main(){
     int p[2];
     pipe(p);
+    // 子进程负责传输数据,父进程等待
     if(fork() == 0){
         for(int i = 2; i <= 35; i++){
             int num = i;
@@ -60,9 +75,10 @@ int main(){
         }
         get_primes(p);
     }else{
-        // 这里不能跟wait交换,这里的文件描述符是父进程的，与子进程无关！不会影响子进程读取数据
+        // 关闭父进程管道(父进程不用传输数据)
         close(p[RD]);
         close(p[WR]);
+        // wait(0)使父进程等待子进程结束，0表示不关心子进程的退出状态。
         wait(0);
     }
     exit(0);
